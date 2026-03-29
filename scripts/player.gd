@@ -16,6 +16,9 @@ extends CharacterBody3D
 @onready var model: Node3D = $Model
 @onready var animation_player: AnimationPlayer = $Model/AnimationPlayer
 @onready var click_indicator_scene: PackedScene = preload("res://scenes/click_indicator.tscn")
+@onready var muzzle: Marker3D = $Muzzle
+
+const Projectile = preload("res://scenes/projectile.tscn")
 
 # ── State ─────────────────────────────────────────────────────────
 var _is_moving: bool = false
@@ -25,9 +28,12 @@ var _current_indicator: Node3D = null
 signal started_moving
 signal stopped_moving
 signal health_changed(new_hp: int, max_hp: int)
+signal skill_cast(skill_index: int, cooldown: float)
 
 # ── Stats ─────────────────────────────────────────────────────────
 @export var max_health: int = 100
+@export var skill_q_cooldown: float = 3.0
+var _skill_q_remaining: float = 0.0
 var current_health: int:
 	set(value):
 		current_health = clampi(value, 0, max_health)
@@ -45,6 +51,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.button_index == MOUSE_BUTTON_LEFT:
 			_handle_click(event.position)
 
+func _process(delta: float) -> void:
+	if _skill_q_remaining > 0.0:
+		_skill_q_remaining = maxf(_skill_q_remaining - delta, 0.0)
+	if Input.is_action_just_pressed("ui_skill_q"):
+		shoot()
+
 func _physics_process(delta: float) -> void:
 	# Gravity
 	if not is_on_floor():
@@ -61,14 +73,12 @@ func _physics_process(delta: float) -> void:
 			direction.y = 0.0
 			direction = direction.normalized()
 
-			# Smooth rotation toward movement direction
 			if direction.length() > 0.01:
 				var target_angle: float = atan2(direction.x, direction.z)
 				rotation.y = lerp_angle(rotation.y, target_angle, rotation_speed * delta)
 
 			velocity.x = direction.x * move_speed
 			velocity.z = direction.z * move_speed
-			# Feed into avoidance system if enabled; _on_velocity_computed will adjust x/z
 			navigation_agent.velocity = velocity
 	else:
 		velocity.x = move_toward(velocity.x, 0.0, move_speed)
@@ -77,7 +87,6 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 
 func _on_velocity_computed(safe_velocity: Vector3) -> void:
-	# Only override x/z; y is managed by gravity above
 	velocity.x = safe_velocity.x
 	velocity.z = safe_velocity.z
 
@@ -93,7 +102,6 @@ func _handle_click(screen_pos: Vector2) -> void:
 	var ray_end := ray_origin + camera.project_ray_normal(screen_pos) * 1000.0
 	var space_state := get_world_3d().direct_space_state
 
-	# First check for enemies/interactables (layers 2-4), excluding self
 	var query := PhysicsRayQueryParameters3D.create(ray_origin, ray_end)
 	query.collision_mask = 0b1110
 	query.exclude = [self]
@@ -101,10 +109,8 @@ func _handle_click(screen_pos: Vector2) -> void:
 
 	if not result.is_empty():
 		print("[Player] Clicked on: ", result.collider.name)
-		# TODO: Implement target selection / attack logic
 		return
 
-	# Nothing interactable hit — try ground (layer 1)
 	query = PhysicsRayQueryParameters3D.create(ray_origin, ray_end)
 	query.collision_mask = 1
 	query.exclude = [self]
@@ -130,6 +136,38 @@ func _stop_moving() -> void:
 	_play_animation("idle")
 	_remove_click_indicator()
 	stopped_moving.emit()
+
+# ── Shooting ──────────────────────────────────────────────────────
+
+func shoot() -> void:
+	if _skill_q_remaining > 0.0:
+		return
+	_skill_q_remaining = skill_q_cooldown
+	skill_cast.emit(0, skill_q_cooldown)
+
+	var camera := get_viewport().get_camera_3d()
+	if not camera:
+		return
+
+	var mouse_pos := get_viewport().get_mouse_position()
+	var ray_origin := camera.project_ray_origin(mouse_pos)
+	var ray_end := ray_origin + camera.project_ray_normal(mouse_pos) * 1000.0
+
+	var space_state := get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(ray_origin, ray_end)
+	query.exclude = [self]
+	var result := space_state.intersect_ray(query)
+
+	var target_pos: Vector3
+	if result.is_empty():
+		target_pos = ray_end
+	else:
+		target_pos = result.position
+
+	var proj = Projectile.instantiate()
+	get_tree().current_scene.add_child(proj)
+	proj.global_position = muzzle.global_position
+	proj.direction = (target_pos - muzzle.global_position).normalized()
 
 # ── Visual feedback ───────────────────────────────────────────────
 
@@ -165,4 +203,3 @@ func _on_death() -> void:
 	_stop_moving()
 	_play_animation("death")
 	set_physics_process(false)
-	# TODO: death screen / respawn logic

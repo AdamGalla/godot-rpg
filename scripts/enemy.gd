@@ -17,12 +17,14 @@ var _target: CharacterBody3D = null
 var _attack_timer: float = 0.0
 
 @onready var nav_agent: NavigationAgent3D = $NavigationAgent3D
+@onready var _hbar_fill: MeshInstance3D = $HealthBar3D/Fill
 
 signal died
 
 func _ready() -> void:
 	current_health = max_health
 	add_to_group("enemies")
+	_update_health_bar()
 
 func _physics_process(delta: float) -> void:
 	if state == State.DEAD:
@@ -89,8 +91,14 @@ func _try_attack() -> void:
 
 func take_damage(amount: int) -> void:
 	current_health -= amount
+	_update_health_bar()
 	if current_health <= 0:
 		_die()
+
+func _update_health_bar() -> void:
+	var ratio := clampf(float(current_health) / float(max_health), 0.0, 1.0)
+	_hbar_fill.scale = Vector3(ratio, 1.0, 1.0)
+	_hbar_fill.position = Vector3((ratio - 1.0) * 0.35, 0.0, 0.001)
 
 func _die() -> void:
 	state = State.DEAD
